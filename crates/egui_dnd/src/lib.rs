@@ -9,8 +9,8 @@ use crate::item_iterator::ItemIterator;
 use crate::state::DragDropUi;
 use std::hash::Hash;
 
-mod item;
-mod item_iterator;
+pub mod item;
+pub mod item_iterator;
 mod state;
 /// Helper functions to support the drag and drop functionality
 pub mod utils;
