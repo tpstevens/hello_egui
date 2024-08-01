@@ -306,7 +306,7 @@ impl<'a> Handle<'a> {
         };
 
         if response.contains_pointer() {
-            if self.show_drag_cursor_on_hover {
+            if ui.is_enabled() && self.show_drag_cursor_on_hover {
                 ui.output_mut(|o| o.cursor_icon = CursorIcon::Grab);
             }
             *self.hovering_over_any_handle = true;
@@ -465,75 +465,93 @@ impl DragDropUi {
         // During the first frame, we check if the pointer is actually over any of the item handles and cancel the drag if it isn't
         let mut first_frame = false;
         let config = self.config(ui).clone();
+        let mut dragged_item_rect: Option<Rect> = None;
+        let mut pointer_pos: Option<Pos2> = None;
 
-        ui.input(|i| {
-            if i.pointer.any_down() {
-                if matches!(self.detection_state, DragDetectionState::None)
-                    || matches!(
-                        self.detection_state,
-                        DragDetectionState::TransitioningBackAfterDragFinished { .. }
-                    )
-                {
-                    first_frame = true;
-                    self.detection_state = DragDetectionState::PressedWaitingForDelay {
-                        pressed_at: SystemTime::now(),
-                    };
-                }
+        if ui.is_enabled() {
+            ui.input(|i| {
+                if i.pointer.any_down() {
+                    if matches!(self.detection_state, DragDetectionState::None)
+                        || matches!(
+                            self.detection_state,
+                            DragDetectionState::TransitioningBackAfterDragFinished { .. }
+                        )
+                    {
+                        first_frame = true;
+                        self.detection_state = DragDetectionState::PressedWaitingForDelay {
+                            pressed_at: SystemTime::now(),
+                        };
+                    }
 
-                let drag_distance = (i.pointer.hover_pos().unwrap_or_default()
-                    - i.pointer.press_origin().unwrap_or_default())
-                .length();
-                let is_below_scroll_threshold =
-                    drag_distance < config.scroll_tolerance.unwrap_or(f32::INFINITY);
+                    let drag_distance = (i.pointer.hover_pos().unwrap_or_default()
+                        - i.pointer.press_origin().unwrap_or_default())
+                    .length();
+                    let is_below_scroll_threshold =
+                        drag_distance < config.scroll_tolerance.unwrap_or(f32::INFINITY);
 
-                if let DragDetectionState::PressedWaitingForDelay { pressed_at } =
-                    self.detection_state
-                {
-                    if pressed_at.elapsed().unwrap_or_default() >= config.drag_delay {
-                        if is_below_scroll_threshold {
-                            self.detection_state =
-                                DragDetectionState::WaitingForClickThreshold { pressed_at };
-                        } else {
+                    if let DragDetectionState::PressedWaitingForDelay { pressed_at } =
+                        self.detection_state
+                    {
+                        if pressed_at.elapsed().unwrap_or_default() >= config.drag_delay {
+                            if is_below_scroll_threshold {
+                                self.detection_state =
+                                    DragDetectionState::WaitingForClickThreshold { pressed_at };
+                            } else {
+                                self.detection_state = DragDetectionState::Cancelled(
+                                    "Drag distance exceeded scroll threshold",
+                                );
+                            }
+                        } else if !is_below_scroll_threshold {
                             self.detection_state = DragDetectionState::Cancelled(
                                 "Drag distance exceeded scroll threshold",
                             );
                         }
-                    } else if !is_below_scroll_threshold {
-                        self.detection_state = DragDetectionState::Cancelled(
-                            "Drag distance exceeded scroll threshold",
-                        );
+                    }
+                    if let DragDetectionState::WaitingForClickThreshold { pressed_at } =
+                        self.detection_state
+                    {
+                        if pressed_at.elapsed().unwrap_or_default()
+                            >= config.click_tolerance_timeout
+                        {
+                            self.detection_state = DragDetectionState::CouldBeValidDrag;
+                        }
                     }
                 }
-                if let DragDetectionState::WaitingForClickThreshold { pressed_at } =
-                    self.detection_state
-                {
-                    if pressed_at.elapsed().unwrap_or_default() >= config.click_tolerance_timeout {
-                        self.detection_state = DragDetectionState::CouldBeValidDrag;
-                    }
-                }
-            }
-        });
+            });
 
-        let pointer_pos = ui
-            .input(|i| i.pointer.hover_pos())
-            .or_else(|| self.detection_state.last_pointer_pos());
+            pointer_pos = ui
+                .input(|i| i.pointer.hover_pos())
+                .or_else(|| self.detection_state.last_pointer_pos());
 
-        let dragged_item_rect = if let DragDetectionState::Dragging {
-            offset,
-            dragged_item_size,
-            ..
-        } = &self.detection_state
-        {
-            Some(Rect::from_min_size(
-                pointer_pos.unwrap_or_default() + *offset,
-                *dragged_item_size,
-            ))
+            dragged_item_rect = if let DragDetectionState::Dragging {
+                offset,
+                dragged_item_size,
+                ..
+            } = &self.detection_state
+            {
+                Some(Rect::from_min_size(
+                    pointer_pos.unwrap_or_default() + *offset,
+                    *dragged_item_size,
+                ))
+            } else {
+                None
+            };
         } else {
-            None
-        };
+            self.detection_state = DragDetectionState::None;
+        }
 
         let mut item_iter = ItemIterator::new(self, dragged_item_rect, *ui.layout());
         callback(ui, &mut item_iter);
+
+        if !ui.is_enabled() {
+            return DragDropResponse {
+                finished: false,
+                update: None,
+                state: self.detection_state.clone(),
+                cancellation_reason: None,
+                has_changed: false,
+            };
+        }
 
         let ItemIterator {
             source_item,
